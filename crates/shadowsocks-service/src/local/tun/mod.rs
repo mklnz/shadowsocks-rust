@@ -39,10 +39,10 @@ cfg_if! {
     }
 }
 
+use self::{dns::TunDns, ip_packet::IpPacket, tcp::TcpTun, udp::UdpTun, virt_device::TokenBuffer};
 use crate::local::{context::ServiceContext, loadbalancing::PingBalancer};
 
-use self::{ip_packet::IpPacket, tcp::TcpTun, udp::UdpTun, virt_device::TokenBuffer};
-
+pub mod dns;
 mod ip_packet;
 mod tcp;
 mod udp;
@@ -56,6 +56,7 @@ pub struct TunBuilder {
     udp_expiry_duration: Option<Duration>,
     udp_capacity: Option<usize>,
     mode: Mode,
+    tun_dns: Option<TunDns>,
 }
 
 /// TunConfiguration contains a HANDLE, which is a *mut c_void on Windows.
@@ -71,6 +72,7 @@ impl TunBuilder {
             udp_expiry_duration: None,
             udp_capacity: None,
             mode: Mode::TcpOnly,
+            tun_dns: None,
         }
     }
 
@@ -101,6 +103,10 @@ impl TunBuilder {
 
     pub fn mode(&mut self, mode: Mode) {
         self.mode = mode;
+    }
+
+    pub fn tun_dns(&mut self, tun_dns: TunDns) {
+        self.tun_dns = Some(tun_dns);
     }
 
     /// Build Tun server
@@ -137,6 +143,7 @@ impl TunBuilder {
             udp_cleanup_interval,
             udp_keepalive_rx,
             mode: self.mode,
+            tun_dns: self.tun_dns,
         })
     }
 }
@@ -149,6 +156,7 @@ pub struct Tun {
     udp_cleanup_interval: Duration,
     udp_keepalive_rx: mpsc::Receiver<SocketAddr>,
     mode: Mode,
+    tun_dns: Option<TunDns>,
 }
 
 impl Tun {
@@ -372,6 +380,17 @@ impl Tun {
                 let dst_addr = SocketAddr::new(packet.dst_addr(), dst_port);
 
                 let payload = udp_packet.payload();
+
+                // If tun_dns is enabled, intercept DNS request and reply
+                if let Some(tun_dns) = &self.tun_dns {
+                    if let Some(reply) = tun_dns.handle_udp(
+                        &src_addr, &dst_addr, payload,
+                    ).await {
+                        let _ = self.device.write(&reply).await;
+                        return Ok(());
+                    }
+                }
+
                 trace!(
                     "[TUN] UDP packet {} (unicast? {}) -> {} (unicast? {}) {}",
                     src_addr, !src_non_unicast, dst_addr, !dst_non_unicast, udp_packet

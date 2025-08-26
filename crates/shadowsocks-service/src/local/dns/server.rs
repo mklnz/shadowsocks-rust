@@ -711,7 +711,7 @@ fn should_forward_by_response(
     }
 }
 
-struct DnsClient {
+pub struct DnsClient {
     context: Arc<ServiceContext>,
     client_cache: DnsClientCache,
     mode: Mode,
@@ -720,7 +720,7 @@ struct DnsClient {
 }
 
 impl DnsClient {
-    fn new(context: Arc<ServiceContext>, balancer: PingBalancer, mode: Mode, client_cache_size: usize) -> Self {
+    pub fn new(context: Arc<ServiceContext>, balancer: PingBalancer, mode: Mode, client_cache_size: usize) -> Self {
         Self {
             context,
             client_cache: DnsClientCache::new(client_cache_size),
@@ -730,7 +730,7 @@ impl DnsClient {
         }
     }
 
-    async fn resolve(
+    pub async fn resolve(
         &self,
         request: Message,
         local_addr: &NameServerAddr,
@@ -781,7 +781,7 @@ impl DnsClient {
         Ok(message)
     }
 
-    async fn acl_lookup(
+    pub async fn acl_lookup(
         &self,
         query: &Query,
         local_addr: &NameServerAddr,

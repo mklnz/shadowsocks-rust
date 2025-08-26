@@ -34,7 +34,7 @@ use self::online_config::{OnlineConfigService, OnlineConfigServiceBuilder};
 use self::redir::{Redir, RedirBuilder};
 use self::socks::{Socks, SocksBuilder};
 #[cfg(feature = "local-tun")]
-use self::tun::{Tun, TunBuilder};
+use self::tun::{Tun, TunBuilder, dns::TunDnsBuilder};
 #[cfg(feature = "local-tunnel")]
 use self::tunnel::{Tunnel, TunnelBuilder};
 
@@ -419,7 +419,7 @@ impl Server {
                 }
                 #[cfg(feature = "local-tun")]
                 ProtocolType::Tun => {
-                    let mut builder = TunBuilder::new(context.clone(), balancer);
+                    let mut builder = TunBuilder::new(context.clone(), balancer.clone());
                     if let Some(address) = local_config.tun_interface_address {
                         builder.address(address);
                     }
@@ -490,6 +490,28 @@ impl Server {
                             }
                         }
                     }
+
+                    // Build tun-dns if dns settings are set and tun interface has an address
+                    if let (
+                        Some(tun_interface_address),
+                        Some(local_dns_addr),
+                        Some(remote_dns_addr),
+                    ) = (
+                        local_config.tun_interface_address,
+                        local_config.local_dns_addr,
+                        local_config.remote_dns_addr,
+                    ) {
+                        let listen_addr = SocketAddr::new(tun_interface_address.addr(), 53);
+                        let client_cache_size = local_config.client_cache_size.unwrap_or(5);
+
+                        let tun_dns_builder = TunDnsBuilder::new(
+                            context.clone(), listen_addr, local_dns_addr, remote_dns_addr, balancer,
+                            client_cache_size,
+                        );
+
+                        builder.tun_dns(tun_dns_builder.build());
+                    }
+
                     let server = builder.build().await?;
                     local_server.tun_servers.push(server);
                 }

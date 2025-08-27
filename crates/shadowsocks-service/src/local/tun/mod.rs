@@ -57,6 +57,7 @@ pub struct TunBuilder {
     udp_capacity: Option<usize>,
     mode: Mode,
     tun_dns: Option<TunDns>,
+    address: Option<IpNet>, // For iOS/macOS raw fd cases, use address from config
 }
 
 /// TunConfiguration contains a HANDLE, which is a *mut c_void on Windows.
@@ -73,11 +74,13 @@ impl TunBuilder {
             udp_capacity: None,
             mode: Mode::TcpOnly,
             tun_dns: None,
+            address: None,
         }
     }
 
     pub fn address(&mut self, addr: IpNet) {
         self.tun_config.address(addr.addr()).netmask(addr.netmask());
+        self.address = Some(addr);
     }
 
     pub fn destination(&mut self, addr: IpNet) {
@@ -144,6 +147,7 @@ impl TunBuilder {
             udp_keepalive_rx,
             mode: self.mode,
             tun_dns: self.tun_dns,
+            address: self.address,
         })
     }
 }
@@ -157,6 +161,7 @@ pub struct Tun {
     udp_keepalive_rx: mpsc::Receiver<SocketAddr>,
     mode: Mode,
     tun_dns: Option<TunDns>,
+    address: Option<IpNet>,
 }
 
 impl Tun {
@@ -170,19 +175,27 @@ impl Tun {
 
         let address = match self.device.address() {
             Ok(a) => a,
-            Err(err) => {
-                error!("[TUN] failed to get device address, error: {}", err);
-                return Err(io::Error::other(err));
+            Err(err) => match self.address {
+                Some(addr) => addr.addr(),
+                None => {
+                    error!("[TUN] failed to get device address, error: {}", err);
+                    return Err(io::Error::other(err));
+                }
             }
         };
+        info!("[TUN] TUN address: {}", address);
 
         let netmask = match self.device.netmask() {
             Ok(n) => n,
-            Err(err) => {
-                error!("[TUN] failed to get device netmask, error: {}", err);
-                return Err(io::Error::other(err));
+            Err(err) => match self.address {
+                Some(addr) => addr.netmask(),
+                None => {
+                    error!("[TUN] failed to get device netmask, error: {}", err);
+                    return Err(io::Error::other(err));
+                }
             }
         };
+        info!("[TUN] TUN netmask: {}", netmask);
 
         let address_net = match IpNet::with_netmask(address, netmask) {
             Ok(n) => n,
@@ -254,6 +267,24 @@ impl Tun {
                 peer_addr_opt = self.udp_keepalive_rx.recv() => {
                     let peer_addr = peer_addr_opt.expect("UDP keep-alive channel closed unexpectedly");
                     self.udp.keep_alive(&peer_addr).await;
+                }
+
+                // UDP tun-dns reply
+                dns_reply = async {
+                    if let Some(tun_dns) = &mut self.tun_dns {
+                        let reply = tun_dns.recv_packet().await;
+                        return Some(reply);
+                    }
+                    None
+                } => {
+                    if let Some(dns_reply) = dns_reply {
+                        match self.device.write(&dns_reply).await {
+                            Ok(_) => {}
+                            Err(err) => {
+                                error!("[TUN] failed to write to tun device, error: {}", err);
+                            }
+                        }
+                    }
                 }
 
                 // TCP channel sent back
@@ -383,10 +414,8 @@ impl Tun {
 
                 // If tun_dns is enabled, intercept DNS request and reply
                 if let Some(tun_dns) = &self.tun_dns {
-                    if let Some(reply) = tun_dns.handle_udp(
-                        &src_addr, &dst_addr, payload,
-                    ).await {
-                        let _ = self.device.write(&reply).await;
+                    if tun_dns.should_handle(&dst_addr) {
+                        tun_dns.handle_udp(&src_addr, &payload).await;
                         return Ok(());
                     }
                 }

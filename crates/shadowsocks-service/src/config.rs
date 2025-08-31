@@ -318,6 +318,10 @@ struct SSLocalExtConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     tun_device_fd_from_path: Option<String>,
 
+    /// TunDns
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tun_dns_filter_addrs: Option<Vec<String>>,
+
     /// SOCKS5
     #[cfg(feature = "local")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -994,6 +998,9 @@ pub struct LocalConfig {
     #[cfg(all(feature = "local-tun", unix))]
     pub tun_device_fd_from_path: Option<PathBuf>,
 
+    /// TunDns
+    pub tun_dns_filter_addrs: Option<Vec<SocketAddr>>,
+
     /// macOS launchd socket for TCP listener
     ///
     /// <https://developer.apple.com/documentation/xpc/1505523-launch_activate_socket>
@@ -1097,6 +1104,9 @@ impl LocalConfig {
             tun_device_fd: None,
             #[cfg(all(feature = "local-tun", unix))]
             tun_device_fd_from_path: None,
+
+            // TunDns
+            tun_dns_filter_addrs: None,
 
             #[cfg(target_os = "macos")]
             launchd_tcp_socket_name: None,
@@ -1824,6 +1834,13 @@ impl Config {
                         #[cfg(all(feature = "local-tun", unix))]
                         if let Some(tun_device_fd_from_path) = local.tun_device_fd_from_path {
                             local_config.tun_device_fd_from_path = Some(From::from(tun_device_fd_from_path));
+                        }
+
+                        if let Some(tun_dns_filter_addrs) = local.tun_dns_filter_addrs {
+                            let addrs = tun_dns_filter_addrs.
+                                into_iter().filter_map(|addr| SocketAddr::from_str(&addr).
+                                ok()).collect();
+                            local_config.tun_dns_filter_addrs = Some(addrs);
                         }
 
                         #[cfg(feature = "local")]
@@ -2893,6 +2910,10 @@ impl fmt::Display for Config {
                             .tun_device_fd_from_path
                             .as_ref()
                             .map(|p| p.to_str().expect("tun_device_fd_from_path is not utf-8").to_owned()),
+
+                        // TunDns
+                        tun_dns_filter_addrs: local.tun_dns_filter_addrs.as_ref().
+                            map(|vec| vec.iter().map(|d| d.to_string()).collect()),
 
                         #[cfg(feature = "local")]
                         socks5_auth_config_path: None,

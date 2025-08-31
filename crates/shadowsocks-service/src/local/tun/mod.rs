@@ -124,6 +124,8 @@ impl TunBuilder {
         //     tun_config.packet_information(false);
         // });
 
+        info!("tun config: {:?}", self.tun_config);
+
         let device = match create_as_async(&self.tun_config) {
             Ok(d) => d,
             Err(TunError::Io(err)) => return Err(err),
@@ -168,8 +170,8 @@ impl Tun {
     /// Start serving
     pub async fn run(mut self) -> io::Result<()> {
         info!(
-            "shadowsocks tun device {}, mode {}",
-            self.device.tun_name().or_else(|r| Ok::<_, ()>(r.to_string())).unwrap(),
+            "shadowsocks tun device: {}, mode: {}",
+            self.device.tun_name().unwrap_or("".to_string()),
             self.mode,
         );
 
@@ -209,6 +211,10 @@ impl Tun {
             "[TUN] tun device network: {} (address: {}, netmask: {})",
             address_net, address, netmask
         );
+
+        if let Some(tun_dns) = self.tun_dns.as_ref() {
+            info!("[TUN] using tun-dns transparent dns resolver, filtering: {:?}", &tun_dns.filter_addrs);
+        }
 
         let address_broadcast = address_net.broadcast();
 
@@ -415,7 +421,7 @@ impl Tun {
                 // If tun_dns is enabled, intercept DNS request and reply
                 if let Some(tun_dns) = &self.tun_dns {
                     if tun_dns.should_handle(&dst_addr) {
-                        tun_dns.handle_udp(&src_addr, &payload).await;
+                        tun_dns.handle_udp(&src_addr, &dst_addr, &payload).await;
                         return Ok(());
                     }
                 }

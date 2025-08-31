@@ -1,4 +1,4 @@
-use log::{ error, trace };
+use log::{error, info};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
@@ -14,7 +14,7 @@ use crate::local::loadbalancing::PingBalancer;
 pub struct TunDnsBuilder {
     context: Arc<ServiceContext>,
     mode: Mode,
-    listen_addr: SocketAddr,
+    filter_addrs: Vec<SocketAddr>,
     local_addr: NameServerAddr,
     remote_addr: Address,
     balancer: PingBalancer,
@@ -24,7 +24,7 @@ pub struct TunDnsBuilder {
 impl TunDnsBuilder {
     pub fn new(
         context: Arc<ServiceContext>,
-        listen_addr: SocketAddr,
+        filter_addrs: Vec<SocketAddr>,
         local_addr: NameServerAddr,
         remote_addr: Address,
         balancer: PingBalancer,
@@ -33,7 +33,7 @@ impl TunDnsBuilder {
         Self {
             context,
             mode: Mode::UdpOnly,
-            listen_addr,
+            filter_addrs,
             local_addr,
             remote_addr,
             balancer,
@@ -56,19 +56,18 @@ impl TunDnsBuilder {
         let (tun_tx, tun_rx) = mpsc::channel(64);
 
         let udp = Arc::new(TunDnsUdp{
-          listen_addr: self.listen_addr,
             local_dns_addr: self.local_addr,
             remote_dns_addr: self.remote_addr,
             tun_tx,
             client
         });
 
-        TunDns{ listen_addr: self.listen_addr, udp, tun_rx }
+        TunDns{ filter_addrs: self.filter_addrs, udp, tun_rx }
     }
 }
 
 pub struct TunDns {
-    listen_addr: SocketAddr,
+    pub filter_addrs: Vec<SocketAddr>,
     udp: Arc<TunDnsUdp>,
     tun_rx: mpsc::Receiver<BytesMut>,
 }
@@ -77,18 +76,20 @@ impl TunDns {
     // Determine whether to intercept and handle the dns packet
     // The packet dst should equal to the listen addr (which is the TUN device address)
     pub fn should_handle(&self, dst_addr: &SocketAddr) -> bool {
-        self.listen_addr.eq(dst_addr)
+        self.filter_addrs.contains(dst_addr)
     }
 
     pub async fn handle_udp(
-        &self, src_addr: &SocketAddr, payload: &[u8]
+        &self, src_addr: &SocketAddr, dst_addr: &SocketAddr, payload: &[u8]
     ) {
+        let dst_addr = dst_addr.to_owned();
         let src_addr = src_addr.to_owned();
         let payload = payload.to_owned();
         let udp = self.udp.clone();
 
+        info!("spawning dns query task, src: {}, dst: {}", &src_addr, &dst_addr);
         tokio::spawn(async move {
-            udp.handle(&src_addr, &payload).await;
+            udp.handle(&src_addr, &dst_addr, &payload).await;
         });
     }
 
@@ -101,7 +102,6 @@ impl TunDns {
 }
 
 struct TunDnsUdp {
-    listen_addr: SocketAddr,
     local_dns_addr: NameServerAddr,
     remote_dns_addr: Address,
     tun_tx: mpsc::Sender<BytesMut>,
@@ -109,7 +109,7 @@ struct TunDnsUdp {
 }
 
 impl TunDnsUdp {
-    async fn handle(&self, dst_addr: &SocketAddr, payload: &[u8]) {
+    async fn handle(&self, src_addr: &SocketAddr, dst_addr: &SocketAddr, payload: &[u8]) {
         let message = match Message::from_vec(&payload) {
             Ok(m) => m,
             Err(err) => {
@@ -118,7 +118,7 @@ impl TunDnsUdp {
             }
         };
 
-        trace!("[TunDns] performing dns query for {:?}", message.query());
+        log::info!("[TunDns] performing dns query for {:?}", message.query());
 
         let answer = match self.client.resolve(
             message,
@@ -132,17 +132,16 @@ impl TunDnsUdp {
             }
         };
 
-        trace!("[TunDns] dns query answer: {:?}", answer.answers());
+        log::info!("[TunDns] dns query answer: {:?}", answer.answers());
 
-        let packet = self.build_reply_packet(answer, &dst_addr);
+        // Reply packet has src/dst reversed
+        let packet = self.build_reply_packet(answer, &dst_addr, &src_addr);
         if let Some(packet) = packet {
             let _ = self.tun_tx.send(packet).await;
         }
     }
 
-    fn build_reply_packet(&self, answer: Message, dst_addr: &SocketAddr) -> Option<BytesMut> {
-        let src_addr = self.listen_addr;
-
+    fn build_reply_packet(&self, answer: Message, src_addr: &SocketAddr, dst_addr: &SocketAddr) -> Option<BytesMut> {
         let packet: Option<BytesMut> = match (src_addr, dst_addr) {
             (SocketAddr::V4(peer), SocketAddr::V4(remote)) => {
                 let builder = PacketBuilder::ipv4(

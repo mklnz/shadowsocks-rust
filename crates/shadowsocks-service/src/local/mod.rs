@@ -491,7 +491,7 @@ impl Server {
                         }
                     }
 
-                    // Build tun-dns if dns settings are set and tun interface has an address
+                    // [TunDns] Build tun-dns if dns settings are set and tun interface has an address
                     if let (
                         Some(tun_interface_address),
                         Some(local_dns_addr),
@@ -501,11 +501,18 @@ impl Server {
                         local_config.local_dns_addr,
                         local_config.remote_dns_addr,
                     ) {
-                        let listen_addr = SocketAddr::new(tun_interface_address.addr(), 53);
+                        // Use filter addrs, if not provided then default to tun_interface_address
+                        let filter_addrs = match local_config.tun_dns_filter_addrs {
+                            Some(addrs) => addrs,
+                            None => {
+                                vec![SocketAddr::new(tun_interface_address.addr(), 53)]
+                            }
+                        };
+
                         let client_cache_size = local_config.client_cache_size.unwrap_or(5);
 
                         let tun_dns_builder = TunDnsBuilder::new(
-                            context.clone(), listen_addr, local_dns_addr, remote_dns_addr, balancer,
+                            context.clone(), filter_addrs, local_dns_addr, remote_dns_addr, balancer,
                             client_cache_size,
                         );
 

@@ -1,8 +1,9 @@
-use log::{error, info};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
 use etherparse::PacketBuilder;
+use futures::future;
 use hickory_resolver::proto::op::Message;
 use tokio::sync::mpsc;
 use shadowsocks::config::Mode;
@@ -14,7 +15,7 @@ use crate::local::loadbalancing::PingBalancer;
 pub struct TunDnsBuilder {
     context: Arc<ServiceContext>,
     mode: Mode,
-    filter_addrs: Vec<SocketAddr>,
+    listen_addrs: Vec<SocketAddr>,
     local_addr: NameServerAddr,
     remote_addr: Address,
     balancer: PingBalancer,
@@ -24,7 +25,7 @@ pub struct TunDnsBuilder {
 impl TunDnsBuilder {
     pub fn new(
         context: Arc<ServiceContext>,
-        filter_addrs: Vec<SocketAddr>,
+        listen_addrs: Vec<SocketAddr>,
         local_addr: NameServerAddr,
         remote_addr: Address,
         balancer: PingBalancer,
@@ -33,7 +34,7 @@ impl TunDnsBuilder {
         Self {
             context,
             mode: Mode::UdpOnly,
-            filter_addrs,
+            listen_addrs,
             local_addr,
             remote_addr,
             balancer,
@@ -53,30 +54,52 @@ impl TunDnsBuilder {
             self.client_cache_size,
         ));
 
-        let (tun_tx, tun_rx) = mpsc::channel(64);
+        if self.listen_addrs.len() > 0 {
+            let (tun_tx, tun_rx) = mpsc::channel(64);
 
-        let udp = Arc::new(TunDnsUdp{
-            local_dns_addr: self.local_addr,
-            remote_dns_addr: self.remote_addr,
-            tun_tx,
-            client
-        });
+            let udp = Arc::new(TunDnsUdp{
+                local_dns_addr: self.local_addr,
+                remote_dns_addr: self.remote_addr,
+                tun_tx,
+                client
+            });
 
-        TunDns{ filter_addrs: self.filter_addrs, udp, tun_rx }
+            TunDns{
+                listen_addrs: self.listen_addrs,
+                udp: Some(udp),
+                tun_rx: Some(tun_rx),
+            }
+        } else {
+            // If no listen_addrs, then return blank TunDns which does nothing
+            TunDns::new()
+        }
     }
 }
 
 pub struct TunDns {
-    pub filter_addrs: Vec<SocketAddr>,
-    udp: Arc<TunDnsUdp>,
-    tun_rx: mpsc::Receiver<BytesMut>,
+    pub listen_addrs: Vec<SocketAddr>,
+    pub udp: Option<Arc<TunDnsUdp>>,
+    pub tun_rx: Option<mpsc::Receiver<BytesMut>>,
 }
 
 impl TunDns {
+    pub fn new() -> Self {
+        TunDns{
+            listen_addrs: vec![],
+            udp: None,
+            tun_rx: None,
+        }
+    }
+
+    // If no listening addrs, then TunDns is not enabled
+    pub fn is_enabled(&self) -> bool {
+        self.listen_addrs.len() > 0
+    }
+
     // Determine whether to intercept and handle the dns packet
     // The packet dst should equal to the listen addr (which is the TUN device address)
     pub fn should_handle(&self, dst_addr: &SocketAddr) -> bool {
-        self.filter_addrs.contains(dst_addr)
+        self.listen_addrs.contains(dst_addr)
     }
 
     pub async fn handle_udp(
@@ -87,21 +110,28 @@ impl TunDns {
         let payload = payload.to_owned();
         let udp = self.udp.clone();
 
-        info!("spawning dns query task, src: {}, dst: {}", &src_addr, &dst_addr);
+        log::trace!("spawning dns query task, src: {}, dst: {}", &src_addr, &dst_addr);
         tokio::spawn(async move {
-            udp.handle(&src_addr, &dst_addr, &payload).await;
+            if let Some(udp) = udp {
+                udp.handle(&src_addr, &dst_addr, &payload).await;
+            }
         });
     }
 
-    pub async fn recv_packet(&mut self) -> BytesMut {
-        match self.tun_rx.recv().await {
-            Some(b) => b,
-            None => unreachable!("channel closed unexpectedly"),
+    // Wait for dns answer packets, if no tun_rx (tun dns is not enabled),
+    // then return future pending which never resolves
+    pub fn recv_packet(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Option<BytesMut>> + Send + '_>> {
+        if let Some(tun_rx) = self.tun_rx.as_mut() {
+            Box::pin(tun_rx.recv())
+        } else {
+            Box::pin(future::pending::<Option<BytesMut>>())
         }
     }
 }
 
-struct TunDnsUdp {
+pub struct TunDnsUdp {
     local_dns_addr: NameServerAddr,
     remote_dns_addr: Address,
     tun_tx: mpsc::Sender<BytesMut>,
@@ -113,12 +143,12 @@ impl TunDnsUdp {
         let message = match Message::from_vec(&payload) {
             Ok(m) => m,
             Err(err) => {
-                error!("[TunDns] failed to parse DNS packet: {}", err);
+                log::error!("[TunDns] failed to parse DNS packet: {}", err);
                 return;
             }
         };
 
-        log::info!("[TunDns] performing dns query for {:?}", message.query());
+        log::trace!("[TunDns] performing dns query for {:?}", message.query());
 
         let answer = match self.client.resolve(
             message,
@@ -127,12 +157,12 @@ impl TunDnsUdp {
         ).await {
             Ok(answer) => answer,
             Err(err) => {
-                error!("[TunDns] failed to resolve query: {}", err);
+                log::error!("[TunDns] failed to resolve query: {}", err);
                 return;
             }
         };
 
-        log::info!("[TunDns] dns query answer: {:?}", answer.answers());
+        log::trace!("[TunDns] dns query answer: {:?}", answer.answers());
 
         // Reply packet has src/dst reversed
         let packet = self.build_reply_packet(answer, &dst_addr, &src_addr);
@@ -151,7 +181,7 @@ impl TunDnsUdp {
                 let data = match answer.to_vec() {
                     Ok(data) => data,
                     Err(err) => {
-                        error!("[TunDns] failed to convert dns query to data: {}", err);
+                        log::error!("[TunDns] failed to convert dns query to data: {}", err);
                         return None;
                     }
                 };

@@ -320,7 +320,7 @@ struct SSLocalExtConfig {
 
     /// TunDns
     #[serde(skip_serializing_if = "Option::is_none")]
-    tun_dns_filter_addrs: Option<Vec<String>>,
+    tun_dns_listen_addresses: Option<Vec<String>>,
 
     /// SOCKS5
     #[cfg(feature = "local")]
@@ -999,7 +999,7 @@ pub struct LocalConfig {
     pub tun_device_fd_from_path: Option<PathBuf>,
 
     /// TunDns
-    pub tun_dns_filter_addrs: Option<Vec<SocketAddr>>,
+    pub tun_dns_listen_addresses: Option<Vec<SocketAddr>>,
 
     /// macOS launchd socket for TCP listener
     ///
@@ -1106,7 +1106,7 @@ impl LocalConfig {
             tun_device_fd_from_path: None,
 
             // TunDns
-            tun_dns_filter_addrs: None,
+            tun_dns_listen_addresses: None,
 
             #[cfg(target_os = "macos")]
             launchd_tcp_socket_name: None,
@@ -1836,11 +1836,11 @@ impl Config {
                             local_config.tun_device_fd_from_path = Some(From::from(tun_device_fd_from_path));
                         }
 
-                        if let Some(tun_dns_filter_addrs) = local.tun_dns_filter_addrs {
+                        if let Some(tun_dns_filter_addrs) = local.tun_dns_listen_addresses {
                             let addrs = tun_dns_filter_addrs.
                                 into_iter().filter_map(|addr| SocketAddr::from_str(&addr).
                                 ok()).collect();
-                            local_config.tun_dns_filter_addrs = Some(addrs);
+                            local_config.tun_dns_listen_addresses = Some(addrs);
                         }
 
                         #[cfg(feature = "local")]
@@ -2912,7 +2912,7 @@ impl fmt::Display for Config {
                             .map(|p| p.to_str().expect("tun_device_fd_from_path is not utf-8").to_owned()),
 
                         // TunDns
-                        tun_dns_filter_addrs: local.tun_dns_filter_addrs.as_ref().
+                        tun_dns_listen_addresses: local.tun_dns_listen_addresses.as_ref().
                             map(|vec| vec.iter().map(|d| d.to_string()).collect()),
 
                         #[cfg(feature = "local")]

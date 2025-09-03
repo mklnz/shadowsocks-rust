@@ -8,7 +8,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-
 use byte_string::ByteStr;
 use cfg_if::cfg_if;
 use ipnet::IpNet;
@@ -56,7 +55,7 @@ pub struct TunBuilder {
     udp_expiry_duration: Option<Duration>,
     udp_capacity: Option<usize>,
     mode: Mode,
-    tun_dns: Option<TunDns>,
+    tun_dns: TunDns,
     address: Option<IpNet>, // For iOS/macOS raw fd cases, use address from config
 }
 
@@ -73,7 +72,7 @@ impl TunBuilder {
             udp_expiry_duration: None,
             udp_capacity: None,
             mode: Mode::TcpOnly,
-            tun_dns: None,
+            tun_dns: TunDns{ listen_addrs: vec![], udp: None, tun_rx: None},
             address: None,
         }
     }
@@ -109,7 +108,7 @@ impl TunBuilder {
     }
 
     pub fn tun_dns(&mut self, tun_dns: TunDns) {
-        self.tun_dns = Some(tun_dns);
+        self.tun_dns = tun_dns;
     }
 
     /// Build Tun server
@@ -123,8 +122,6 @@ impl TunBuilder {
         //     // IFF_NO_PI preventing excessive buffer reallocating
         //     tun_config.packet_information(false);
         // });
-
-        info!("tun config: {:?}", self.tun_config);
 
         let device = match create_as_async(&self.tun_config) {
             Ok(d) => d,
@@ -162,7 +159,7 @@ pub struct Tun {
     udp_cleanup_interval: Duration,
     udp_keepalive_rx: mpsc::Receiver<SocketAddr>,
     mode: Mode,
-    tun_dns: Option<TunDns>,
+    tun_dns: TunDns,
     address: Option<IpNet>,
 }
 
@@ -212,8 +209,11 @@ impl Tun {
             address_net, address, netmask
         );
 
-        if let Some(tun_dns) = self.tun_dns.as_ref() {
-            info!("[TUN] using tun-dns transparent dns resolver, filtering: {:?}", &tun_dns.filter_addrs);
+        if self.tun_dns.is_enabled() {
+            info!(
+                "[TUN] using tun-dns transparent dns resolver, filtering: {:?}",
+                &self.tun_dns.listen_addrs,
+            );
         }
 
         let address_broadcast = address_net.broadcast();
@@ -275,24 +275,6 @@ impl Tun {
                     self.udp.keep_alive(&peer_addr).await;
                 }
 
-                // UDP tun-dns reply
-                dns_reply = async {
-                    if let Some(tun_dns) = &mut self.tun_dns {
-                        let reply = tun_dns.recv_packet().await;
-                        return Some(reply);
-                    }
-                    None
-                } => {
-                    if let Some(dns_reply) = dns_reply {
-                        match self.device.write(&dns_reply).await {
-                            Ok(_) => {}
-                            Err(err) => {
-                                error!("[TUN] failed to write to tun device, error: {}", err);
-                            }
-                        }
-                    }
-                }
-
                 // TCP channel sent back
                 packet = self.tcp.recv_packet() => {
                     match self.device.write(&packet).await {
@@ -305,6 +287,17 @@ impl Tun {
                         }
                         Err(err) => {
                             error!("[TUN] failed to set packet information, error: {}, {:?}", err, ByteStr::new(&packet));
+                        }
+                    }
+                }
+
+                answer = self.tun_dns.recv_packet() => {
+                    if let Some(answer) = answer {
+                        match self.device.write(&answer).await {
+                            Ok(_) => {}
+                            Err(err) => {
+                                error!("[TUN] failed to set packet information, error: {}, {:?}", err, ByteStr::new(&answer));
+                            }
                         }
                     }
                 }
@@ -419,9 +412,9 @@ impl Tun {
                 let payload = udp_packet.payload();
 
                 // If tun_dns is enabled, intercept DNS request and reply
-                if let Some(tun_dns) = &self.tun_dns {
-                    if tun_dns.should_handle(&dst_addr) {
-                        tun_dns.handle_udp(&src_addr, &dst_addr, &payload).await;
+                if self.tun_dns.is_enabled() {
+                    if self.tun_dns.should_handle(&dst_addr) {
+                        self.tun_dns.handle_udp(&src_addr, &dst_addr, &payload).await;
                         return Ok(());
                     }
                 }

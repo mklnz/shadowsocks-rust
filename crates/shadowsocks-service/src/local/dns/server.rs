@@ -755,6 +755,11 @@ impl DnsClient {
             // Make queries according to ACL rules
 
             let (r, forward) = self.acl_lookup(&request.queries()[0], local_addr, remote_addr).await;
+
+            if let Err(err) = &r {
+                error!("local DNS lookup failure: {}", err);
+            }
+
             if let Ok(result) = r {
                 for rec in result.answers() {
                     trace!("dns answer: {:?}", rec);

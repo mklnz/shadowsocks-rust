@@ -261,6 +261,8 @@ pub fn define_command_line_options(mut app: Command) -> Command {
             .arg(
                 Arg::new("LOG_CONFIG")
                     .long("log-config")
+                    // deprecated for removal
+                    .hide(true)
                     .num_args(1)
                     .action(ArgAction::Set)
                     .value_parser(clap::value_parser!(PathBuf))
@@ -753,17 +755,15 @@ pub fn create(matches: &ArgMatches) -> ShadowsocksResult<(Runtime, impl Future<O
 
             #[cfg(feature = "local-redir")]
             {
-                if RedirType::tcp_default() != RedirType::NotSupported {
-                    if let Some(tcp_redir) = matches.get_one::<String>("TCP_REDIR") {
+                if RedirType::tcp_default() != RedirType::NotSupported
+                    && let Some(tcp_redir) = matches.get_one::<String>("TCP_REDIR") {
                         local_config.tcp_redir = tcp_redir.parse::<RedirType>().expect("tcp-redir");
                     }
-                }
 
-                if RedirType::udp_default() != RedirType::NotSupported {
-                    if let Some(udp_redir) = matches.get_one::<String>("UDP_REDIR") {
+                if RedirType::udp_default() != RedirType::NotSupported
+                    && let Some(udp_redir) = matches.get_one::<String>("UDP_REDIR") {
                         local_config.udp_redir = udp_redir.parse::<RedirType>().expect("udp-redir");
                     }
-                }
             }
 
             #[cfg(feature = "local-dns")]

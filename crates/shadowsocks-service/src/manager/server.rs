@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::{collections::HashMap, io, net::SocketAddr, sync::Arc, time::Duration};
 
+use cfg_if::cfg_if;
 use log::{error, info, trace};
 use shadowsocks::{
     ManagerListener, ServerAddr,
@@ -328,8 +329,8 @@ impl Manager {
         };
 
         let pid_path = self.server_pid_path(port);
-        if pid_path.exists() {
-            if let Ok(mut pid_file) = File::open(&pid_path) {
+        if pid_path.exists()
+            && let Ok(mut pid_file) = File::open(&pid_path) {
                 let mut pid_content = String::new();
                 if pid_file.read_to_string(&mut pid_content).is_ok() {
                     let pid_content = pid_content.trim();
@@ -345,7 +346,6 @@ impl Manager {
                     }
                 }
             }
-        }
 
         let server_config_path = self.server_config_path(port);
 
@@ -476,10 +476,22 @@ impl Manager {
                     return Ok(AddResponse(err));
                 }
             },
-            #[cfg(feature = "aead-cipher")]
-            None => self.svr_cfg.method.unwrap_or(CipherKind::CHACHA20_POLY1305),
-            #[cfg(not(feature = "aead-cipher"))]
-            None => return Ok(AddResponse("method is required")),
+            None => match self.svr_cfg.method {
+                Some(m) => m,
+                None => {
+                    cfg_if! {
+                        if #[cfg(feature = "aead-cipher")] {
+                            // If AEAD cipher is enabled, use chacha20-poly1305 as default method
+                            // NOTE: This behavior is defined in shadowsocks-libev's `manager.c`
+                            CipherKind::CHACHA20_POLY1305
+                        } else {
+                            // AEAD cipher is disabled, default method is not defined in any standard or implementations.
+                            // TODO: Complete this after discussion.
+                            return Ok(AddResponse("method is required".to_string()));
+                        }
+                    }
+                }
+            },
         };
 
         let mut svr_cfg = match ServerConfig::new(addr, req.password.clone(), method) {

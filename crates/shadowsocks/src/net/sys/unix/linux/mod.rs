@@ -11,7 +11,7 @@ use std::{
 
 use log::{debug, error, warn};
 use pin_project::pin_project;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpSocket, TcpStream as TokioTcpStream, UdpSocket},
@@ -310,11 +310,10 @@ pub async fn bind_outbound_udp_socket(bind_addr: &SocketAddr, config: &ConnectOp
         UdpSocket::from_std(socket.into())?
     };
 
-    if !config.udp.allow_fragmentation {
-        if let Err(err) = set_disable_ip_fragmentation(af, &socket) {
+    if !config.udp.allow_fragmentation
+        && let Err(err) = set_disable_ip_fragmentation(af, &socket) {
             warn!("failed to disable IP fragmentation, error: {}", err);
         }
-    }
 
     // Any traffic except localhost should be protected
     // This is a workaround for VPNService
@@ -439,8 +438,9 @@ static SUPPORT_BATCH_SEND_RECV_MSG: AtomicBool = AtomicBool::new(true);
 fn recvmsg_fallback<S: AsRawFd>(sock: &S, msg: &mut BatchRecvMessage<'_>) -> io::Result<()> {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
 
-    let addr_storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
-    let addr_len = mem::size_of_val(&addr_storage) as libc::socklen_t;
+    let addr_storage = SockAddrStorage::zeroed();
+    let addr_len = addr_storage.size_of() as libc::socklen_t;
+
     let sock_addr = unsafe { SockAddr::new(addr_storage, addr_len) };
     hdr.msg_name = sock_addr.as_ptr() as *mut _;
     hdr.msg_namelen = sock_addr.len() as _;
@@ -475,8 +475,8 @@ pub fn batch_recvmsg<S: AsRawFd>(sock: &S, msgs: &mut [BatchRecvMessage<'_>]) ->
     for msg in msgs.iter_mut() {
         let mut hdr: libc::mmsghdr = unsafe { mem::zeroed() };
 
-        let addr_storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
-        let addr_len = mem::size_of_val(&addr_storage) as libc::socklen_t;
+        let addr_storage = SockAddrStorage::zeroed();
+        let addr_len = addr_storage.size_of() as libc::socklen_t;
 
         vec_msg_name.push(unsafe { SockAddr::new(addr_storage, addr_len) });
         let sock_addr = vec_msg_name.last_mut().unwrap();

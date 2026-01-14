@@ -208,15 +208,14 @@ impl ParsingRules {
                         return;
                     }
                 }
-            } else if let Some(set_rule) = caps.get(2) {
-                if let Ok(set_rule) = str::from_utf8(set_rule.as_bytes()) {
+            } else if let Some(set_rule) = caps.get(2)
+                && let Ok(set_rule) = str::from_utf8(set_rule.as_bytes()) {
                     let set_rule = set_rule.replace("\\.", ".");
                     if self.add_set_rule_inner(&set_rule).is_ok() {
                         trace!("REGEX-RULE {} => SET-RULE {}", rule, set_rule);
                         return;
                     }
                 }
-            }
         }
 
         trace!("REGEX-RULE {}", rule);
@@ -323,8 +322,8 @@ impl ParsingRules {
 ///
 /// Mode is the default ACL strategy for those addresses that are not in configuration file.
 ///
-/// - `BlackList` - Bypasses / Rejects all addresses except those in `[proxy_list]` or `[white_list]`
-/// - `WhiteList` - Proxies / Accepts all addresses except those in `[bypass_list]` or `[black_list]`
+/// - `WhiteList` - Bypasses / Rejects all addresses except those in `[proxy_list]` or `[white_list]`
+/// - `BlackList` - Proxies / Accepts all addresses except those in `[bypass_list]` or `[black_list]`
 ///
 /// ## Rules
 ///
@@ -543,7 +542,7 @@ impl AccessControl {
 
     /// Returns the ASCII representation a domain name,
     /// if conversion fails returns original string
-    fn convert_to_ascii(host: &str) -> Cow<str> {
+    fn convert_to_ascii(host: &str) -> Cow<'_, str> {
         idna::domain_to_ascii(host)
             .map(From::from)
             .unwrap_or_else(|_| host.into())

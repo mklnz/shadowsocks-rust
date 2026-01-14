@@ -1468,6 +1468,7 @@ macro_rules! impl_from {
 
 impl_from!(::std::io::Error, ErrorKind::IoError, "error while reading file");
 impl_from!(json5::Error, ErrorKind::JsonParsingError, "json parse error");
+impl_from!(serde_json::Error, ErrorKind::JsonParsingError, "json parse error");
 
 impl Debug for Error {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -2404,9 +2405,9 @@ impl Config {
         }
 
         // Security
-        if let Some(sec) = config.security {
-            if let Some(replay_attack) = sec.replay_attack {
-                if let Some(policy) = replay_attack.policy {
+        if let Some(sec) = config.security
+            && let Some(replay_attack) = sec.replay_attack
+                && let Some(policy) = replay_attack.policy {
                     match policy.parse::<ReplayAttackPolicy>() {
                         Ok(p) => nconfig.security.replay_attack.policy = p,
                         Err(..) => {
@@ -2415,8 +2416,6 @@ impl Config {
                         }
                     }
                 }
-            }
-        }
 
         if let Some(balancer) = config.balancer {
             nconfig.balancer = BalancerConfig {
@@ -2585,6 +2584,12 @@ impl Config {
         Self::load_from_ssconfig(c, config_type)
     }
 
+    /// Load Config from a JSON `str`
+    pub fn load_from_json_str(s: &str, config_type: ConfigType) -> Result<Self, Error> {
+        let c = serde_json::from_str::<SSConfig>(s)?;
+        Self::load_from_ssconfig(c, config_type)
+    }
+
     /// Load Config from a File
     pub fn load_from_file<P: AsRef<Path>>(filename: P, config_type: ConfigType) -> Result<Self, Error> {
         let filename = filename.as_ref();
@@ -2630,19 +2635,17 @@ impl Config {
             }
 
             // Balancer related checks
-            if let Some(rtt) = self.balancer.max_server_rtt {
-                if rtt.as_secs() == 0 {
+            if let Some(rtt) = self.balancer.max_server_rtt
+                && rtt.as_secs() == 0 {
                     let err = Error::new(ErrorKind::Invalid, "balancer.max_server_rtt must be > 0", None);
                     return Err(err);
                 }
-            }
 
-            if let Some(intv) = self.balancer.check_interval {
-                if intv.as_secs() == 0 {
+            if let Some(intv) = self.balancer.check_interval
+                && intv.as_secs() == 0 {
                     let err = Error::new(ErrorKind::Invalid, "balancer.check_interval must be > 0", None);
                     return Err(err);
                 }
-            }
         }
 
         if self.config_type.is_server() && self.server.is_empty() {
@@ -2677,12 +2680,11 @@ impl Config {
             let server = &inst.config;
 
             // Plugin shouldn't be an empty string
-            if let Some(plugin) = server.plugin() {
-                if plugin.plugin.trim().is_empty() {
+            if let Some(plugin) = server.plugin()
+                && plugin.plugin.trim().is_empty() {
                     let err = Error::new(ErrorKind::Malformed, "`plugin` shouldn't be an empty string", None);
                     return Err(err);
                 }
-            }
 
             // Server's domain name shouldn't be an empty string
             match server.addr() {
@@ -3086,14 +3088,13 @@ impl fmt::Display for Config {
                 jconf.mode = Some(m.mode.to_string());
             }
 
-            if jconf.method.is_none() {
-                if let Some(ref m) = m.method {
+            if jconf.method.is_none()
+                && let Some(ref m) = m.method {
                     jconf.method = Some(m.to_string());
                 }
-            }
 
-            if jconf.plugin.is_none() {
-                if let Some(ref p) = m.plugin {
+            if jconf.plugin.is_none()
+                && let Some(ref p) = m.plugin {
                     jconf.plugin = Some(p.plugin.clone());
                     if let Some(ref o) = p.plugin_opts {
                         jconf.plugin_opts = Some(o.clone());
@@ -3102,7 +3103,6 @@ impl fmt::Display for Config {
                         jconf.plugin_args = Some(p.plugin_args.clone());
                     }
                 }
-            }
         }
 
         if self.no_delay {
@@ -3208,8 +3208,8 @@ impl fmt::Display for Config {
 /// If value is in format `${VAR_NAME}` then it will try to read from `VAR_NAME` environment variable.
 /// It will return the original value if fails to read `${VAR_NAME}`.
 pub fn read_variable_field_value(value: &str) -> Cow<'_, str> {
-    if let Some(left_over) = value.strip_prefix("${") {
-        if let Some(var_name) = left_over.strip_suffix('}') {
+    if let Some(left_over) = value.strip_prefix("${")
+        && let Some(var_name) = left_over.strip_suffix('}') {
             match env::var(var_name) {
                 Ok(value) => return value.into(),
                 Err(err) => {
@@ -3220,7 +3220,6 @@ pub fn read_variable_field_value(value: &str) -> Cow<'_, str> {
                 }
             }
         }
-    }
 
     value.into()
 }
